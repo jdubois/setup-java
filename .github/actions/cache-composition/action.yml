@@ -1,0 +1,74 @@
+name: Cache composition canary phase
+description: Assert one phase of the opt-in Maven cache lifecycle experiment
+inputs:
+  variant:
+    description: builtin, profile, manual, or hybrid
+    required: true
+  phase:
+    description: Lifecycle phase
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Download explicitly known predecessor identity
+      if: inputs.variant == 'hybrid' && inputs.phase == 'enrich'
+      uses: actions/download-artifact@v8
+      with:
+        name: cache-composition-hybrid-seed
+        path: ${{ runner.temp }}/composition-predecessor
+    - name: Prepare isolated identity and empty repository
+      id: identity
+      shell: bash
+      env:
+        CANARY_VARIANT: ${{ inputs.variant }}
+        CANARY_PHASE: ${{ inputs.phase }}
+      run: node __tests__/cache/composition/canary.mjs prepare
+    - name: Set up Java and optionally restore built-in dependencies
+      id: java
+      uses: ./
+      with:
+        distribution: temurin
+        java-version: '17'
+        cache: ${{ inputs.variant != 'manual' && 'maven' || '' }}
+        cache-jdk: false
+        cache-path: ${{ steps.identity.outputs.repository }}
+        cache-dependency-path: |
+          **/pom.xml
+          **/.mvn/wrapper/maven-wrapper.properties
+          **/.mvn/extensions.xml
+          .cache-composition/run
+          ${{ inputs.variant == 'profile' && '.cache-composition/profile' || '' }}
+        cache-read-only: ${{ steps.identity.outputs.read-only }}
+    - name: Restore managed namespace or explicitly known predecessor
+      id: manual
+      if: inputs.variant == 'manual' || (inputs.variant == 'hybrid' && inputs.phase == 'enrich' && steps.java.outputs.cache-primary-key != '')
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.identity.outputs.repository }}
+        key: ${{ inputs.variant == 'manual' && format('{0}{1}', steps.identity.outputs.prefix, hashFiles('**/pom.xml', '**/.mvn/wrapper/maven-wrapper.properties', '**/.mvn/extensions.xml')) || steps.identity.outputs.predecessor }}
+        restore-keys: ${{ inputs.variant == 'manual' && steps.identity.outputs.prefix || '' }}
+    - name: Assert restore identity and sentinel payload
+      shell: bash
+      env:
+        CANARY_VARIANT: ${{ inputs.variant }}
+        CANARY_PHASE: ${{ inputs.phase }}
+        CANARY_PRIMARY: ${{ inputs.variant == 'manual' && steps.manual.outputs.cache-primary-key || steps.java.outputs.cache-primary-key }}
+        CANARY_HIT: ${{ inputs.variant == 'manual' && steps.manual.outputs.cache-hit || steps.java.outputs.cache-hit }}
+        CANARY_SETUP_HIT: ${{ steps.java.outputs.cache-hit }}
+        CANARY_MATCHED: ${{ steps.manual.outputs.cache-matched-key }}
+        CANARY_PREDECESSOR: ${{ steps.identity.outputs.predecessor }}
+        CANARY_STARTED: ${{ steps.identity.outputs.started }}
+      run: node __tests__/cache/composition/canary.mjs verify
+    - name: Save managed dependencies after successful assertions
+      if: success() && inputs.variant == 'manual' && steps.identity.outputs.read-only == 'false' && steps.manual.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ steps.identity.outputs.repository }}
+        key: ${{ steps.manual.outputs.cache-primary-key }}
+    - name: Preserve assertions and primary identity
+      uses: actions/upload-artifact@v7
+      with:
+        name: cache-composition-${{ inputs.variant }}-${{ inputs.phase }}
+        path: ${{ steps.identity.outputs.results }}
+        if-no-files-found: error
+        retention-days: 7

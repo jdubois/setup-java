@@ -497,6 +497,10 @@ describe('setup action orchestration', () => {
     await run();
 
     expect(cache.restore).not.toHaveBeenCalled();
+    expect(core.setOutput).not.toHaveBeenCalledWith(
+      'cache-primary-key',
+      expect.anything()
+    );
   });
 
   it('does not initialize cache modules when cache input is absent', async () => {
@@ -514,6 +518,10 @@ describe('setup action orchestration', () => {
 
     expect(cacheFeature.isCacheFeatureAvailable).not.toHaveBeenCalled();
     expect(cache.restore).not.toHaveBeenCalled();
+    expect(core.setOutput).not.toHaveBeenCalledWith(
+      'cache-primary-key',
+      expect.anything()
+    );
     expect(factory.getJavaDistribution).toHaveBeenCalledWith(
       'temurin',
       expect.objectContaining({cacheJdk: false}),

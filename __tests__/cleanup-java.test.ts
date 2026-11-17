@@ -230,6 +230,50 @@ describe('cleanup', () => {
     expect(spyCacheSave).toHaveBeenCalled();
   });
 
+  it.each(['true', 'false'])(
+    'honors cache-read-only=%s after a cold dependency miss',
+    async readOnly => {
+      (core.getInput as jest.Mock<(name: string) => string>).mockImplementation(
+        name => {
+          if (name === 'cache') return 'maven';
+          if (name === 'cache-read-only') return readOnly;
+          if (name === 'cache-jdk') return 'false';
+          return '';
+        }
+      );
+      jest
+        .mocked(core.getState)
+        .mockImplementation(name =>
+          name === 'cache-primary-key' ? 'cold-primary' : ''
+        );
+      spyCacheSave.mockResolvedValue(1);
+
+      await cleanup();
+
+      if (readOnly === 'true') {
+        expect(spyCacheSave).not.toHaveBeenCalled();
+      } else {
+        expect(spyCacheSave).toHaveBeenCalledTimes(1);
+        expect(spyCacheSave).toHaveBeenCalledWith(
+          [path.join(os.homedir(), '.m2', 'repository')],
+          'cold-primary'
+        );
+      }
+    }
+  );
+
+  it('does not save dependency or wrapper caches when the job did not succeed', async () => {
+    createStateForSuccessfulRestoreWithWrapper('maven');
+    jest
+      .mocked(core.getInput)
+      .mockImplementation(name => (name === 'cache' ? 'maven' : ''));
+    spyJobStatusSuccess.mockReturnValue(false);
+
+    await cleanup();
+
+    expect(spyCacheSave).not.toHaveBeenCalled();
+  });
+
   it('saves the JDK cache without dependency caching', async () => {
     const {key, path: jdkPath, state} = createRegisteredJdk();
     (core.getInput as jest.Mock<any>).mockImplementation((name: string) =>

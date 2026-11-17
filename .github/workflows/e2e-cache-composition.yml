@@ -1,0 +1,118 @@
+name: Validate cache composition
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/e2e-cache-composition.yml
+      - .github/actions/cache-composition/**
+      - __tests__/cache/composition/**
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    # Opt-in push support lets a new workflow be tested before it reaches main.
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[cache-composition]')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [builtin, profile, manual, hybrid]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cache-composition
+        with:
+          variant: ${{ matrix.variant }}
+          phase: seed
+  enrich:
+    needs: seed
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [builtin, profile, manual, hybrid]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cache-composition
+        with:
+          variant: ${{ matrix.variant }}
+          phase: enrich
+  consume:
+    needs: enrich
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [builtin, profile, manual, hybrid]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cache-composition
+        with:
+          variant: ${{ matrix.variant }}
+          phase: consume
+  observe:
+    needs: consume
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [builtin, profile, manual, hybrid]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cache-composition
+        with:
+          variant: ${{ matrix.variant }}
+          phase: observe
+      - uses: ./.github/actions/cache-composition
+        if: matrix.variant == 'profile' || matrix.variant == 'manual'
+        with:
+          variant: ${{ matrix.variant }}
+          phase: other-profile
+  read-only-producers:
+    needs: seed
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [builtin, profile, manual, hybrid]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cache-composition
+        with:
+          variant: ${{ matrix.variant }}
+          phase: cold-ro
+      - uses: ./.github/actions/cache-composition
+        with:
+          variant: ${{ matrix.variant }}
+          phase: cold-rw
+  read-only-observers:
+    needs: read-only-producers
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [builtin, profile, manual, hybrid]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cache-composition
+        with:
+          variant: ${{ matrix.variant }}
+          phase: check-ro
+      - uses: ./.github/actions/cache-composition
+        with:
+          variant: ${{ matrix.variant }}
+          phase: check-rw

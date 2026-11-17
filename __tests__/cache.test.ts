@@ -648,6 +648,56 @@ describe('dependency cache', () => {
       );
     });
   });
+  describe('restore-to-save lifecycle', () => {
+    it.each(['miss', 'prefix', 'exact'])(
+      'preserves the original primary and custom paths after a %s restore',
+      async match => {
+        const state = new Map<string, string>();
+        const primary = `setup-java-${process.env['RUNNER_OS']}-${process.arch}-maven-manifest-hash`;
+        const matched =
+          match === 'miss'
+            ? undefined
+            : match === 'prefix'
+              ? `${primary}-previous`
+              : primary;
+        const paths = [
+          join(workspace, 'repository'),
+          '!' + join(workspace, 'repository', '**', '*.lastUpdated')
+        ];
+        jest.mocked(core.saveState).mockImplementation((name, value) => {
+          state.set(name, String(value));
+        });
+        jest
+          .mocked(core.getState)
+          .mockImplementation(name => state.get(name) ?? '');
+        jest
+          .mocked(glob.hashFiles)
+          .mockImplementation(async pattern =>
+            pattern === '**/.mvn/wrapper/maven-wrapper.properties'
+              ? ''
+              : 'manifest-hash'
+          );
+        jest.mocked(cache.restoreCache).mockResolvedValue(matched);
+        jest.mocked(cache.saveCache).mockResolvedValue(1);
+
+        await restore('maven', '', paths);
+        jest.mocked(glob.hashFiles).mockResolvedValue('changed-after-restore');
+        await save('maven');
+
+        expect(cache.restoreCache).toHaveBeenCalledWith(paths, primary);
+        expect(core.setOutput).toHaveBeenCalledWith(
+          'cache-hit',
+          match === 'exact'
+        );
+        if (match === 'exact') {
+          expect(cache.saveCache).not.toHaveBeenCalled();
+        } else {
+          expect(cache.saveCache).toHaveBeenCalledTimes(1);
+          expect(cache.saveCache).toHaveBeenCalledWith(paths, primary);
+        }
+      }
+    );
+  });
   describe('save', () => {
     let spyCacheSave: any;
     let spyGlobCreate: jest.Mock;
