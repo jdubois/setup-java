@@ -7,6 +7,7 @@ assert.ok(['builtin', 'profile', 'manual', 'hybrid'].includes(variant));
 assert.ok(
   [
     'seed',
+    'seed-consume',
     'enrich',
     'consume',
     'observe',
@@ -90,14 +91,19 @@ if (process.argv[2] === 'prepare') {
   );
   const has = name => fs.existsSync(path.join(repository, name));
   const write = name => fs.writeFileSync(path.join(repository, name), name);
-  const exact = ['consume', 'observe', 'check-rw'].includes(phase);
+  const exact = ['seed-consume', 'consume', 'observe', 'check-rw'].includes(
+    phase
+  );
   assert.equal(
     hit === 'true',
     exact,
     `${variant}/${phase}: unexpected exact-hit output`
   );
   if (exact) {
-    assert.ok(has('enriched'), 'Exact hit must restore the saved payload');
+    assert.ok(
+      has(phase === 'seed-consume' ? 'seed' : 'enriched'),
+      'Exact hit must restore the saved payload'
+    );
     if (variant === 'manual') assert.equal(matched, primary);
   } else if (phase === 'enrich' && ['manual', 'hybrid'].includes(variant)) {
     assert.ok(

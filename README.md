@@ -340,6 +340,12 @@ Use `cache-path` when the build tool stores dependencies outside the default loc
 
 `cache-path` changes what is restored and saved, but not the cache key. Jobs that should share a cache key must use the same OS, architecture, package manager, dependency files, and cache paths.
 
+The built-in dependency restore supplies no additional fallback keys. Cache
+entries are immutable: an exact hit is not updated, and a new entry is saved
+only after a successful job. A wrapper or JDK hit does not imply a dependency hit.
+For cache ownership, profile isolation, resets and custom policies, see
+[Ensuring the Maven cache is complete](docs/advanced-usage.md#ensuring-the-maven-cache-is-complete-plugin-dependencies).
+
 ### Wrapper caches
 
 Maven and Gradle wrapper distributions are restored and saved as additional cache entries, separate from the primary dependency cache. These entries have their own keys in the form `setup-java-<runner-os>-<node-arch>-<wrapper-cache-name>-<file-hash>`.
@@ -387,7 +393,7 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: maven
-      - run: mvn dependency:go-offline dependency:resolve-plugins
+      - run: mvn --batch-mode verify --file pom.xml
 
   build:
     needs: seed-cache
@@ -405,6 +411,10 @@ jobs:
           cache-read-only: true
       - run: mvn ${{ matrix.goal }}
 ```
+
+Choose seed goals and compatible profiles that cover the consumers; static
+resolution does not guarantee an offline build. An existing incomplete exact-hit
+cache must be reset before a new seed strategy can populate it.
 
 ### Cache segment restore timeout
 

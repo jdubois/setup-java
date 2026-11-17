@@ -405,7 +405,10 @@ When you enable `cache: maven`, the action caches your local Maven repository
 the wrapper version or editing core extensions) produces a new key and
 invalidates the cache. At the end of the job the action saves whatever was
 downloaded during that run. It does **not** re-save the cache when the key
-already matches (a cache *hit*).
+already matches exactly (`cache-hit: true`). Saves run in the post action only
+when the job succeeds and `cache-read-only` is not enabled. The action supplies
+no additional restore keys; the cache service can still prefix-match the primary
+key itself.
 
 Downloaded Maven Wrapper distributions (`~/.m2/wrapper/dists`) are cached in a
 **separate** cache entry keyed only on `**/.mvn/wrapper/maven-wrapper.properties`.
@@ -427,19 +430,18 @@ hit, every later `test`/`verify`/`package` job re-downloads them on every run.
 
 ### Seed the cache with a resolution step
 
-To populate `~/.m2` as comprehensively as possible on the run that creates the
-cache, run a dependency-resolution "seed" command before your build. Choose a
-command based on how thorough you need it to be:
+Choose the simplest cache ownership policy that fits your build:
 
-| Seed command | Resolves plugin dependencies? | Notes |
-|--------------|:-----------------------------:|-------|
-| `mvn dependency:resolve` | No | Resolves project dependencies only — misses plugin dependencies (e.g. `aircompressor`). |
-| `mvn dependency:resolve-plugins` | Yes | Resolves plugins **and their dependencies**. |
-| `mvn dependency:go-offline` | Yes | Resolves project and plugin dependencies (a superset). |
-| `mvn dependency:go-offline dependency:resolve-plugins` | Yes (most thorough) | Recommended default. Use `dependency:resolve dependency:resolve-plugins` if `go-offline` is flaky or insufficient for your project. |
+| Need | Approach | Tradeoff |
+| --- | --- | --- |
+| Simple dependency caching | `cache: maven` | A changed manifest starts a new dependency cache. |
+| Several jobs sharing one populated cache | One seed job, then read-only consumers | Consumers wait for the seed; the seed must cover their actual goals and profiles. |
+| Different build profiles need different writers | Include a profile marker alongside the manifest globs | More cache entries and storage; profile names must be stable. |
+| Custom keys or fallback policies | Manage dependencies with [`actions/cache`](https://github.com/actions/cache) instead | You own the namespace, paths, save policy and cache growth. |
 
-Single job — seed, then build (the cache saved at the end of this run contains
-the full set):
+For a single job, run the goals you need before its successful completion.
+An optional resolution step can reduce lazy downloads, but does not guarantee
+an offline build:
 
 ```yaml
 steps:
@@ -455,11 +457,10 @@ steps:
     run: mvn verify --file pom.xml
 ```
 
-Separate seed job — useful for a matrix where different legs run different goals
-(`test`, `check`, `verify`, `-Pprofile1`, ...) but all share the same `~/.m2`
-cache. Without a seed, whichever job finishes first creates the cache from its
-own partial `.m2`, and parallel jobs race to save an equally partial cache; the
-seed job instead creates one comprehensive cache that every other job reuses:
+For parallel jobs, use one writer and read-only consumers. `needs` waits for
+the seed's post action, including its cache save. Here `verify` populates the
+plugins used by the consumers; adapt it to your real goals and active profiles.
+Static resolution alone may miss artifacts downloaded during plugin execution.
 
 ```yaml
 jobs:
@@ -473,14 +474,14 @@ jobs:
           java-version: '25'
           cache: 'maven'
       - name: Seed the Maven cache
-        run: mvn dependency:go-offline dependency:resolve-plugins
+        run: mvn --batch-mode verify --file pom.xml
 
   build:
     needs: seed-cache
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goal: ['test', 'verify', 'test -Pprofile1']
+        goal: ['test', 'verify']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -488,24 +489,28 @@ jobs:
           distribution: 'temurin'
           java-version: '25'
           cache: 'maven'
+          cache-read-only: true
       - name: Build
         run: mvn ${{ matrix.goal }} --file pom.xml
 ```
+
+Read-only applies to the dependency, wrapper **and JDK** caches. A consumer using
+another JDK can still download it, but will not save that installation.
+Shared dependency keys do not automatically require a separate cache per JDK;
+isolate profiles only when their artifacts or ownership need it.
 
 ### Caveats
 
 - **The seed only helps on the run that creates the cache.** Once a cache exists
   for the current `pom.xml` hash, later runs get a hit and any additional
-  downloads are not saved. On an existing repository whose cache is already
-  incomplete, invalidate it once (for example by changing `cache-dependency-path`
-  or deleting the repository's caches) so a complete cache is created from the
-  seed.
+  downloads are not saved. Reset a known incomplete dependency cache before
+  relying on a new seed strategy; see the reset procedure below.
 - **Static resolution is not exhaustive.** `go-offline`/`resolve-plugins` resolve
   the statically declared plugin set for the *active* profiles and modules.
   Profile-gated plugins, conditionally-active modules, and artifacts a plugin
   fetches at execution time may still be missed. For the most complete cache,
-  seed with the fullest goal set your CI actually uses (for example
-  `mvn verify` with every profile enabled).
+  seed with the goal sets and compatible profiles your CI actually uses.
+  Mutually exclusive profiles may require separate writers.
 - **Multi-module projects:** run the seed at the reactor root so every module's
   plugins are resolved.
 
@@ -518,6 +523,87 @@ jobs:
 > [`gradle/actions/setup-gradle`](https://github.com/gradle/actions/tree/main/setup-gradle),
 > which provides purpose-built caching (see the
 > [setup-gradle documentation](https://github.com/gradle/actions/blob/main/docs/setup-gradle.md)).
+
+<details>
+<summary>Isolate build profiles or reset an incomplete dependency cache</summary>
+
+`cache-dependency-path` **replaces** the default hash inputs. Retain all relevant
+manifests and add a committed marker, such as `.github/maven-cache-profile`,
+whose contents identify the logical profile and epoch (for example
+`full-build-v2`). Every writer and consumer sharing that cache must use identical
+marker contents and inputs:
+
+```yaml
+- uses: actions/setup-java@v6
+  with:
+    distribution: temurin
+    java-version: '25'
+    cache: maven
+    cache-dependency-path: |
+      **/pom.xml
+      **/.mvn/wrapper/maven-wrapper.properties
+      **/.mvn/extensions.xml
+      .github/maven-cache-profile
+```
+
+Changing the marker's contents rotates the dependency key. Changing only a path
+or filename is not a guaranteed reset if the hashed contents remain identical.
+Alternatively, delete only the specific incomplete cache entries using GitHub's
+cache management UI. Do not delete all repository caches as a routine reset.
+Neither method of dependency-key rotation resets independent wrapper/JDK keys.
+
+Use explicit logical profile names, not matrix positions that change when the
+matrix is reordered. Adding a profile marker isolates caches but does not enable
+fallback across manifest changes.
+
+</details>
+
+<details>
+<summary>Custom cache policies, diagnostics and trust boundaries</summary>
+
+When using `actions/cache` for dependencies, omit `cache` from setup-java to
+avoid two dependency-cache owners. Set `cache-jdk: true` explicitly if desired.
+Built-in wrapper caching is also disabled without `cache`; if you use `./mvnw`,
+manage `~/.m2/wrapper/dists` separately, keyed by wrapper properties.
+Cache only the repository directory, never Maven settings or credentials.
+
+Keep custom keys in a dedicated, versioned namespace, partitioned by OS,
+architecture and a stable logical build profile. If adding fallback, keep it
+within that namespace/profile. **Do not strip the hash from a built-in key**:
+`setup-java-...-maven-` also prefixes Maven Wrapper keys and does not distinguish
+writers. Cache-service archive versions depend on paths and compression as well
+as keys; do not assume `~/.m2/repository` and an absolute path interoperate.
+
+`cache-primary-key` is populated only when built-in dependency caching runs.
+Guard any dependent restore when this output is empty. A later
+`actions/cache/restore` step does not update setup-java's earlier `cache-hit`.
+A wrapper or JDK hit does not imply a dependency hit, and a dependency miss
+means no archive was restored, not proof that no entry exists: recoverable
+cache-service failures can also produce a miss.
+
+Fallback can retain removed artifact versions inside successive immutable
+archives. Repository cache eviction does not prune those files within an archive;
+rotate a custom namespace/epoch for a clean start. Maven SNAPSHOT/plugin metadata
+and negative-resolution files (`*.lastUpdated`, `resolver-status.properties`)
+also affect resolution. Do not silently delete them or add `-U` to compensate.
+
+GitHub's [cache access restrictions](https://docs.github.com/actions/using-workflows/caching-dependencies-to-speed-up-workflows#restrictions-for-accessing-a-cache)
+still apply. Namespaces are not authorization boundaries; restrict trusted
+writers. Do not broaden fallback in signing, publishing or privileged
+untrusted-code workflows such as `pull_request_target`. Even exact lookup plus
+read-only is not an integrity guarantee: Maven can execute cached plugins.
+
+Warm caches reduce downloads but cannot eliminate failures for new artifacts.
+setup-java's HTTP retries do not control a Maven process in a later step.
+Any bounded, failure-classified dependency-transfer retry belongs in the
+consuming workflow, not around deployments or arbitrary build failures.
+
+The opt-in [composition canary](../.github/workflows/e2e-cache-composition.yml)
+checks cache-service lifecycle behavior using sentinels. It is not a Maven
+download benchmark; custom fallback remains an advanced user-owned policy,
+not a change to the built-in default.
+
+</details>
 
 ## Caching JDK installations
 

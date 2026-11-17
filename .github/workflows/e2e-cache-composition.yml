@@ -28,8 +28,23 @@ jobs:
         with:
           variant: ${{ matrix.variant }}
           phase: seed
-  enrich:
+  seed-consumers:
     needs: seed
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [builtin, profile, manual, hybrid]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/cache-composition
+        with:
+          variant: ${{ matrix.variant }}
+          phase: seed-consume
+  enrich:
+    needs: seed-consumers
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
