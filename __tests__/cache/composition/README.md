@@ -20,7 +20,8 @@ path. It stores only tiny sentinels, not dependencies or credentials.
 | `hybrid` | Built-in miss, then exact restore of an explicitly known H1 key | setup-java post action |
 
 `seed -> seed-consume -> enrich -> consume -> observe` proves that H1 and H2 are
-saved, restored exactly, and H2 is not overwritten by an exact-hit consumer's mutations. The hybrid gets its
+saved, restored exactly, and H2 is not overwritten by an exact-hit consumer's
+mutations. The hybrid gets its
 predecessor key from the seed's artifact; it does not derive a broad prefix from
 the built-in key. Manual and hashed-profile variants also test a different
 profile's miss using the same paths.
@@ -45,3 +46,15 @@ policy to `actions/cache`; it does not publish an unmeasured fallback recipe.
 
 Keys contain the run ID and attempt for targeted cleanup. Remove only entries
 from the specific experiment, if needed, not all repository caches.
+
+## Verified result
+
+[Run 44086022286](https://github.com/jdubois/setup-java/actions/runs/44086022286)
+tested commit `c318445ce0ae2b0c19d869c0912628a86b28df76`: all 28 jobs passed.
+All 38 phase reports were cross-checked, including exact H1/H2 identities,
+the manual/hybrid predecessor keys, same-path profile separation and the
+read-only miss/writable-hit controls.
+
+This demonstrates the existing composition enablers on Ubuntu, not a missing
+cache API. It does not justify changing default lookup policy or promoting
+fallback without measuring Maven transfers and cache growth.
